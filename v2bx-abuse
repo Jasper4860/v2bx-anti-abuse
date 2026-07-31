@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly ABUSE_CHAIN="V2BX_ABUSE_OUT"
+readonly ABUSE_TAG="v2bx-abuse"
+readonly ABUSE_COMMAND_DIR="/usr/local/lib/v2bx-anti-abuse"
+
+usage() {
+  cat <<'EOF'
+用法：
+  v2bx-abuse on        应用或刷新防滥用规则
+  v2bx-abuse off       撤销本工具管理的规则
+  v2bx-abuse status    查看启用状态和服务健康
+  v2bx-abuse counters  查看规则命中计数
+  v2bx-abuse help      显示帮助
+
+可选私网白名单：
+  V2BX_ALLOW_V4_CIDRS="192.168.10.20/32" v2bx-abuse on
+  V2BX_ALLOW_V6_CIDRS="fd00:1234::10/128" v2bx-abuse on
+EOF
+}
+
+require_root() {
+  if [[ ${EUID} -ne 0 ]]; then
+    printf '请使用 root 或 sudo 运行该命令。\n' >&2
+    exit 1
+  fi
+}
+
+show_status() {
+  require_root
+
+  local ipv4_status="disabled"
+  local ipv6_status="disabled"
+
+  if iptables -C OUTPUT \
+    -m comment --comment "${ABUSE_TAG}:jump" \
+    -j "${ABUSE_CHAIN}" >/dev/null 2>&1; then
+    ipv4_status="enabled"
+  fi
+
+  if command -v ip6tables >/dev/null 2>&1 \
+    && ip6tables -C OUTPUT \
+      -m comment --comment "${ABUSE_TAG}:jump" \
+      -j "${ABUSE_CHAIN}" >/dev/null 2>&1; then
+    ipv6_status="enabled"
+  fi
+
+  printf 'IPv4 firewall: %s\n' "${ipv4_status}"
+  printf 'IPv6 firewall: %s\n' "${ipv6_status}"
+
+  if command -v systemctl >/dev/null 2>&1; then
+    printf 'V2bX service: %s\n' "$(systemctl is-active V2bX 2>/dev/null || true)"
+    printf 'Persistence: %s\n' "$(systemctl is-active netfilter-persistent 2>/dev/null || true)"
+  fi
+
+  if [[ -f /var/lib/v2bx-anti-abuse/last-apply ]]; then
+    printf 'Last apply: %s UTC\n' "$(cat /var/lib/v2bx-anti-abuse/last-apply)"
+  fi
+}
+
+show_counters() {
+  require_root
+
+  if iptables -nL "${ABUSE_CHAIN}" >/dev/null 2>&1; then
+    printf '\n[IPv4]\n'
+    iptables -L "${ABUSE_CHAIN}" -n -v -x --line-numbers
+  else
+    printf 'IPv4 managed chain is not installed.\n'
+  fi
+
+  if command -v ip6tables >/dev/null 2>&1 \
+    && ip6tables -nL "${ABUSE_CHAIN}" >/dev/null 2>&1; then
+    printf '\n[IPv6]\n'
+    ip6tables -L "${ABUSE_CHAIN}" -n -v -x --line-numbers
+  else
+    printf 'IPv6 managed chain is not installed.\n'
+  fi
+}
+
+case "${1:-help}" in
+  on|apply|reload)
+    require_root
+    [[ -x "${ABUSE_COMMAND_DIR}/install.sh" ]] \
+      || { printf '找不到 %s/install.sh\n' "${ABUSE_COMMAND_DIR}" >&2; exit 1; }
+    exec "${ABUSE_COMMAND_DIR}/install.sh"
+    ;;
+  off|remove|rollback)
+    require_root
+    [[ -x "${ABUSE_COMMAND_DIR}/remove.sh" ]] \
+      || { printf '找不到 %s/remove.sh\n' "${ABUSE_COMMAND_DIR}" >&2; exit 1; }
+    exec "${ABUSE_COMMAND_DIR}/remove.sh"
+    ;;
+  status)
+    show_status
+    ;;
+  counters|count)
+    show_counters
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    printf '未知操作：%s\n\n' "$1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
