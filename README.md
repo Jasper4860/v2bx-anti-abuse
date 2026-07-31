@@ -14,6 +14,7 @@ V2bX 服务器出站防滥用基线
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/Jasper4860/v2bx-anti-abuse/main/setup.sh)
+```
 
 脚本可重复执行。每次执行前会在 `/var/backups/v2bx-anti-abuse/` 保存 IPv4/IPv6
 规则；应用中途失败会自动恢复本次操作前的规则。规则通过
