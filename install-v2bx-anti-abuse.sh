@@ -239,6 +239,59 @@ add_port_blocks() {
     -j REJECT
 }
 
+add_port_blocks() {
+  local firewall_cmd=$1
+
+  "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+    -p tcp -m multiport --dports 25,465,587 \
+    -m comment --comment "${ABUSE_TAG}:smtp" \
+    -j REJECT
+
+  "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+    -p tcp -m multiport --dports 22,23,135,139,445,3389,5900,5985,5986 \
+    -m comment --comment "${ABUSE_TAG}:remote-admin" \
+    -j REJECT
+
+  "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+    -p udp -m multiport --dports 19,111,123,137,138,161,389,1900,3389,3702,5353,11211 \
+    -m comment --comment "${ABUSE_TAG}:udp-reflection" \
+    -j REJECT
+}
+
+# 从这里开始新增
+add_bittorrent_blocks() {
+  local firewall_cmd=$1
+
+  # 常见 BT/PT TCP 端口
+  "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+    -p tcp \
+    -m multiport --dports 6881:6999,2710,6969,51413 \
+    -m comment --comment "${ABUSE_TAG}:bt-common-tcp" \
+    -j REJECT
+
+  # 常见 BT/PT UDP 端口，包括部分 DHT 流量
+  "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+    -p udp \
+    -m multiport --dports 6881:6999,2710,6969,51413 \
+    -m comment --comment "${ABUSE_TAG}:bt-common-udp" \
+    -j REJECT
+
+  # 检测明文 BitTorrent 握手
+  if "${firewall_cmd}" -m string -h >/dev/null 2>&1; then
+    "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+      -p tcp \
+      -m string \
+      --algo bm \
+      --hex-string '|13426974546f7272656e742070726f746f636f6c|' \
+      --from 0 \
+      --to 256 \
+      -m comment --comment "${ABUSE_TAG}:bt-handshake" \
+      -j REJECT
+  else
+    log "警告：${firewall_cmd} 不支持 string 模块，跳过 BT 握手检测"
+  fi
+}
+
 add_ipv4_destination_blocks() {
   local blocked_cidr
   local blocked_v4_cidrs=(
@@ -332,6 +385,7 @@ add_operator_allowlist iptables 4
 add_dns_exceptions iptables 4
 add_time_sync_exceptions iptables
 add_port_blocks iptables
+add_bittorrent_blocks iptables
 add_ipv4_destination_blocks
 iptables -A "${ABUSE_CHAIN}" \
   -m comment --comment "${ABUSE_TAG}:end" \
@@ -344,6 +398,7 @@ if [[ ${ABUSE_IPV6_ENABLED} -eq 1 ]]; then
   add_dns_exceptions ip6tables 6
   add_time_sync_exceptions ip6tables
   add_port_blocks ip6tables
+  add_bittorrent_blocks ip6tables
   add_ipv6_destination_blocks
   ip6tables -A "${ABUSE_CHAIN}" \
     -m comment --comment "${ABUSE_TAG}:end" \
