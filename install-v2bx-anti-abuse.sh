@@ -239,23 +239,34 @@ add_port_blocks() {
     -j REJECT
 }
 
-add_port_blocks() {
+add_bittorrent_blocks() {
   local firewall_cmd=$1
 
   "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
-    -p tcp -m multiport --dports 25,465,587 \
-    -m comment --comment "${ABUSE_TAG}:smtp" \
+    -p tcp \
+    -m multiport --dports 6881:6999,2710,6969,51413 \
+    -m comment --comment "${ABUSE_TAG}:bt-common-tcp" \
     -j REJECT
 
   "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
-    -p tcp -m multiport --dports 22,23,135,139,445,3389,5900,5985,5986 \
-    -m comment --comment "${ABUSE_TAG}:remote-admin" \
+    -p udp \
+    -m multiport --dports 6881:6999,2710,6969,51413 \
+    -m comment --comment "${ABUSE_TAG}:bt-common-udp" \
     -j REJECT
 
-  "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
-    -p udp -m multiport --dports 19,111,123,137,138,161,389,1900,3389,3702,5353,11211 \
-    -m comment --comment "${ABUSE_TAG}:udp-reflection" \
-    -j REJECT
+  if "${firewall_cmd}" -m string -h >/dev/null 2>&1; then
+    "${firewall_cmd}" -A "${ABUSE_CHAIN}" \
+      -p tcp \
+      -m string \
+      --algo bm \
+      --hex-string '|13426974546f7272656e742070726f746f636f6c|' \
+      --from 0 \
+      --to 256 \
+      -m comment --comment "${ABUSE_TAG}:bt-handshake" \
+      -j REJECT
+  else
+    log "警告：${firewall_cmd} 不支持 string 模块，跳过 BT 握手检测"
+  fi
 }
 
 # 从这里开始新增
