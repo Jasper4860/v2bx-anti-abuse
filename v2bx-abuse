@@ -4,77 +4,218 @@ set -Eeuo pipefail
 readonly ABUSE_CHAIN="V2BX_ABUSE_OUT"
 readonly ABUSE_TAG="v2bx-abuse"
 readonly ABUSE_COMMAND_DIR="/usr/local/lib/v2bx-anti-abuse"
+readonly ABUSE_STATE_DIR="/var/lib/v2bx-anti-abuse"
+
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+  readonly COLOR_GREEN=$'\033[32m'
+  readonly COLOR_YELLOW=$'\033[33m'
+  readonly COLOR_RED=$'\033[31m'
+  readonly COLOR_MUTED=$'\033[2m'
+  readonly COLOR_RESET=$'\033[0m'
+else
+  readonly COLOR_GREEN=""
+  readonly COLOR_YELLOW=""
+  readonly COLOR_RED=""
+  readonly COLOR_MUTED=""
+  readonly COLOR_RESET=""
+fi
+
+print_header() {
+  printf 'V2bX Anti-Abuse\n'
+  printf '%b%s%b\n' "${COLOR_MUTED}" '----------------' "${COLOR_RESET}"
+}
+
+print_row() {
+  printf '  %s：%b%s%b\n' "$1" "$2" "$3" "${COLOR_RESET}"
+}
+
+print_ok() {
+  print_row "$1" "${COLOR_GREEN}" "$2"
+}
+
+print_warn() {
+  print_row "$1" "${COLOR_YELLOW}" "$2"
+}
+
+print_fail() {
+  print_row "$1" "${COLOR_RED}" "$2"
+}
+
+die() {
+  printf '%b错误：%s%b\n' "${COLOR_RED}" "$*" "${COLOR_RESET}" >&2
+  exit 1
+}
 
 usage() {
   cat <<'EOF'
-用法：
-  v2bx-abuse on        应用或刷新防滥用规则
-  v2bx-abuse off       撤销本工具管理的规则
-  v2bx-abuse status    查看启用状态和服务健康
-  v2bx-abuse counters  查看规则命中计数
-  v2bx-abuse help      显示帮助
+V2bX Anti-Abuse
+
+用法：v2bx-abuse <命令>
+
+  on        应用或刷新规则
+  off       撤销受管规则
+  status    查看保护与服务状态
+  check     检查运行环境
+  counters  查看规则命中计数
+  help      显示帮助
 
 可选私网白名单：
   V2BX_ALLOW_V4_CIDRS="192.168.10.20/32" v2bx-abuse on
   V2BX_ALLOW_V6_CIDRS="fd00:1234::10/128" v2bx-abuse on
+
+可选 BitTorrent 规则：
+  V2BX_BLOCK_BT=1 v2bx-abuse on
 EOF
 }
 
 require_root() {
   if [[ ${EUID} -ne 0 ]]; then
-    printf '请使用 root 或 sudo 运行该命令。\n' >&2
-    exit 1
+    die "请使用 root 或 sudo 运行该命令"
   fi
+}
+
+service_state() {
+  local service_name=$1
+  local state
+
+  if ! command -v systemctl >/dev/null 2>&1; then
+    printf '不可用'
+    return
+  fi
+
+  state="$(systemctl is-active "${service_name}" 2>/dev/null || true)"
+  case "${state}" in
+    active) printf '运行中' ;;
+    inactive|failed|activating|deactivating) printf '未运行' ;;
+    *) printf '不可用' ;;
+  esac
 }
 
 show_status() {
   require_root
 
-  local ipv4_status="disabled"
-  local ipv6_status="disabled"
+  local ipv4_status="未启用"
+  local ipv6_status="不可用"
+  local bt_status="未启用"
+  local v2bx_status
+  local persistence_status
 
   if iptables -C OUTPUT \
     -m comment --comment "${ABUSE_TAG}:jump" \
     -j "${ABUSE_CHAIN}" >/dev/null 2>&1; then
-    ipv4_status="enabled"
+    ipv4_status="已启用"
   fi
 
   if command -v ip6tables >/dev/null 2>&1 \
     && ip6tables -C OUTPUT \
       -m comment --comment "${ABUSE_TAG}:jump" \
       -j "${ABUSE_CHAIN}" >/dev/null 2>&1; then
-    ipv6_status="enabled"
+    ipv6_status="已启用"
+  elif command -v ip6tables >/dev/null 2>&1; then
+    ipv6_status="未启用"
   fi
 
-  printf 'IPv4 firewall: %s\n' "${ipv4_status}"
-  printf 'IPv6 firewall: %s\n' "${ipv6_status}"
-
-  if command -v systemctl >/dev/null 2>&1; then
-    printf 'V2bX service: %s\n' "$(systemctl is-active V2bX 2>/dev/null || true)"
-    printf 'Persistence: %s\n' "$(systemctl is-active netfilter-persistent 2>/dev/null || true)"
+  if iptables -S "${ABUSE_CHAIN}" 2>/dev/null | grep -q "${ABUSE_TAG}:bt-"; then
+    bt_status="已启用"
   fi
 
-  if [[ -f /var/lib/v2bx-anti-abuse/last-apply ]]; then
-    printf 'Last apply: %s UTC\n' "$(cat /var/lib/v2bx-anti-abuse/last-apply)"
+  v2bx_status="$(service_state V2bX)"
+  persistence_status="$(service_state netfilter-persistent)"
+
+  print_header
+  if [[ "${ipv4_status}" == "已启用" ]]; then
+    print_ok "IPv4 保护" "${ipv4_status}"
+  else
+    print_fail "IPv4 保护" "${ipv4_status}"
   fi
+  if [[ "${ipv6_status}" == "已启用" ]]; then
+    print_ok "IPv6 保护" "${ipv6_status}"
+  else
+    print_warn "IPv6 保护" "${ipv6_status}"
+  fi
+  if [[ "${bt_status}" == "已启用" ]]; then
+    print_ok "BT 可选规则" "${bt_status}"
+  else
+    print_row "BT 可选规则" "${COLOR_MUTED}" "${bt_status}"
+  fi
+  if [[ "${v2bx_status}" == "运行中" ]]; then
+    print_ok "V2bX 服务" "${v2bx_status}"
+  else
+    print_warn "V2bX 服务" "${v2bx_status}"
+  fi
+  if [[ "${persistence_status}" == "运行中" ]]; then
+    print_ok "规则持久化" "${persistence_status}"
+  else
+    print_warn "规则持久化" "${persistence_status}"
+  fi
+
+  if [[ -f "${ABUSE_STATE_DIR}/last-apply" ]]; then
+    print_row "最近应用" "${COLOR_MUTED}" "$(cat "${ABUSE_STATE_DIR}/last-apply") UTC"
+  fi
+}
+
+check_environment() {
+  require_root
+
+  local failures=0
+  local command_name
+
+  print_header
+  for command_name in iptables iptables-save iptables-restore netfilter-persistent; do
+    if command -v "${command_name}" >/dev/null 2>&1; then
+      print_ok "${command_name}" "已安装"
+    else
+      print_fail "${command_name}" "缺失"
+      failures=1
+    fi
+  done
+
+  if command -v ip6tables >/dev/null 2>&1; then
+    print_ok "ip6tables" "已安装"
+  else
+    print_warn "ip6tables" "缺失，将跳过 IPv6"
+  fi
+
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    print_fail "UFW" "运行中，存在规则冲突"
+    failures=1
+  else
+    print_ok "UFW" "无冲突"
+  fi
+
+  if command -v firewall-cmd >/dev/null 2>&1 \
+    && systemctl is-active --quiet firewalld 2>/dev/null; then
+    print_fail "firewalld" "运行中，存在规则冲突"
+    failures=1
+  else
+    print_ok "firewalld" "无冲突"
+  fi
+
+  if [[ -f /.dockerenv ]]; then
+    print_warn "运行环境" "检测到容器，请确认规则作用域"
+  else
+    print_ok "运行环境" "宿主机"
+  fi
+
+  return "${failures}"
 }
 
 show_counters() {
   require_root
 
   if iptables -nL "${ABUSE_CHAIN}" >/dev/null 2>&1; then
-    printf '\n[IPv4]\n'
+    printf 'IPv4\n----\n'
     iptables -L "${ABUSE_CHAIN}" -n -v -x --line-numbers
   else
-    printf 'IPv4 managed chain is not installed.\n'
+    printf 'IPv4 受管链尚未安装。\n'
   fi
 
   if command -v ip6tables >/dev/null 2>&1 \
     && ip6tables -nL "${ABUSE_CHAIN}" >/dev/null 2>&1; then
-    printf '\n[IPv6]\n'
+    printf '\nIPv6\n----\n'
     ip6tables -L "${ABUSE_CHAIN}" -n -v -x --line-numbers
   else
-    printf 'IPv6 managed chain is not installed.\n'
+    printf 'IPv6 受管链尚未安装。\n'
   fi
 }
 
@@ -82,17 +223,20 @@ case "${1:-help}" in
   on|apply|reload)
     require_root
     [[ -x "${ABUSE_COMMAND_DIR}/install.sh" ]] \
-      || { printf '找不到 %s/install.sh\n' "${ABUSE_COMMAND_DIR}" >&2; exit 1; }
+      || die "找不到 ${ABUSE_COMMAND_DIR}/install.sh"
     exec "${ABUSE_COMMAND_DIR}/install.sh"
     ;;
   off|remove|rollback)
     require_root
     [[ -x "${ABUSE_COMMAND_DIR}/remove.sh" ]] \
-      || { printf '找不到 %s/remove.sh\n' "${ABUSE_COMMAND_DIR}" >&2; exit 1; }
+      || die "找不到 ${ABUSE_COMMAND_DIR}/remove.sh"
     exec "${ABUSE_COMMAND_DIR}/remove.sh"
     ;;
   status)
     show_status
+    ;;
+  check|doctor)
+    check_environment
     ;;
   counters|count)
     show_counters

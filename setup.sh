@@ -5,15 +5,37 @@ umask 077
 readonly REPO="Jasper4860/v2bx-anti-abuse"
 readonly REF="${V2BX_INSTALL_REF:-main}"
 readonly BASE_URL="https://raw.githubusercontent.com/${REPO}/${REF}"
+readonly COMMAND_DIR="/usr/local/lib/v2bx-anti-abuse"
+readonly COMMAND_PATH="/usr/local/sbin/v2bx-abuse"
 
 TMP_DIR=""
 
-log() {
-    printf '[v2bx-anti-abuse] %s\n' "$*"
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+    readonly COLOR_GREEN=$'\033[32m'
+    readonly COLOR_RED=$'\033[31m'
+    readonly COLOR_MUTED=$'\033[2m'
+    readonly COLOR_RESET=$'\033[0m'
+else
+    readonly COLOR_GREEN=""
+    readonly COLOR_RED=""
+    readonly COLOR_MUTED=""
+    readonly COLOR_RESET=""
+fi
+
+step() {
+    printf '\n%s\n' "$*"
+}
+
+detail() {
+    printf '  %b%s%b\n' "${COLOR_MUTED}" "$*" "${COLOR_RESET}"
+}
+
+success() {
+    printf '%b完成%b  %s\n' "${COLOR_GREEN}" "${COLOR_RESET}" "$*"
 }
 
 die() {
-    printf '[v2bx-anti-abuse] ERROR: %s\n' "$*" >&2
+    printf '%b错误%b  %s\n' "${COLOR_RED}" "${COLOR_RESET}" "$*" >&2
     exit 1
 }
 
@@ -34,15 +56,17 @@ command -v curl >/dev/null 2>&1 || die "系统没有安装 curl"
 TMP_DIR="$(mktemp -d /tmp/v2bx-anti-abuse.XXXXXX)"
 
 files=(
-    "install-v2bx-anti-abuse.sh"
-    "remove-v2bx-anti-abuse.sh"
+    "install.sh"
+    "remove.sh"
     "v2bx-abuse"
 )
 
-log "正在下载防滥用脚本"
+printf 'V2bX Anti-Abuse\n'
+printf '%b%s%b\n' "${COLOR_MUTED}" '----------------' "${COLOR_RESET}"
+step "下载组件"
 
 for file in "${files[@]}"; do
-    log "下载 ${file}"
+    detail "${file}"
 
     curl -fsSL \
         --retry 3 \
@@ -55,17 +79,23 @@ for file in "${files[@]}"; do
 done
 
 chmod 700 \
-    "${TMP_DIR}/install-v2bx-anti-abuse.sh" \
-    "${TMP_DIR}/remove-v2bx-anti-abuse.sh"
+    "${TMP_DIR}/install.sh" \
+    "${TMP_DIR}/remove.sh"
 
 chmod 755 "${TMP_DIR}/v2bx-abuse"
 
-log "开始安装防滥用规则"
+step "安装命令"
+install -d -m 700 "${COMMAND_DIR}"
+install -m 700 "${TMP_DIR}/install.sh" "${COMMAND_DIR}/install.sh"
+install -m 700 "${TMP_DIR}/remove.sh" "${COMMAND_DIR}/remove.sh"
+install -m 755 "${TMP_DIR}/v2bx-abuse" "${COMMAND_PATH}"
 
-bash "${TMP_DIR}/install-v2bx-anti-abuse.sh"
+step "应用保护规则"
 
-log "一键安装完成"
-log "查看状态：v2bx-abuse status"
-log "查看计数：v2bx-abuse counters"
-log "关闭规则：v2bx-abuse off"
-log "重新启用：v2bx-abuse on"
+"${COMMAND_DIR}/install.sh"
+
+printf '\n'
+success "安装完成"
+detail "状态  v2bx-abuse status"
+detail "自检  v2bx-abuse check"
+detail "计数  v2bx-abuse counters"
